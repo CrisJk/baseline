@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="10.11.6.116">
+    <serverData>
+      <paths name="10.11.6.116">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/baseline" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/baseline/model" />
+            <excludedPath local="true" path="$PROJECT_DIR$/open_data" />
+            <excludedPath local="true" path="$PROJECT_DIR$/word2vec.txt" />
+            <excludedPath local="true" path="$PROJECT_DIR$/word2vec2.model" />
+            <excludedPath path="/baseline/word2vec.model" />
+            <excludedPath path="/baseline/word2vec.model.trainables.syn1neg.npy" />
+            <excludedPath path="/baseline/word2vec.model.wv.vectors.npy" />
+            <excludedPath path="/baseline/word2vec.txt" />
+            <excludedPath path="/baseline/corpus.txt" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+      <paths name="10.11.6.117">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/data/baseline" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

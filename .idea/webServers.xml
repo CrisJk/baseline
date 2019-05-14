@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="614d2e62-f89e-459f-b551-bcd95ef8cb7b" name="10.11.6.117" url="http://10.11.6.117">
+        <fileTransfer host="10.11.6.117" port="22" rootFolder="/home/gm/kuangjun" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" shareSSLContext="true" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+      <webServer id="2e062758-6bb8-46aa-a4f8-b1b929280ebf" name="10.11.6.116" url="http://10.11.6.116">
+        <fileTransfer host="10.11.6.116" port="22" rootFolder="/home/gm/kuangjun/docker_root/data" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" shareSSLContext="true" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

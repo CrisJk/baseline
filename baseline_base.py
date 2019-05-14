@@ -3,11 +3,7 @@ import tensorflow as tf
 import random
 import os
 import datetime
-
-
-import encoder
-import embedding
-import data_loader
+from collections import Counter
 
 def set_seed():
     os.environ['PYTHONHASHSEED'] = '0'
@@ -18,7 +14,7 @@ def set_seed():
 set_seed()
 
 FLAGS = tf.app.flags.FLAGS
-tf.app.flags.DEFINE_string('cuda', '1', 'gpu id')
+tf.app.flags.DEFINE_string('cuda', '0', 'gpu id')
 tf.app.flags.DEFINE_boolean('pre_embed', True, 'load pre-trained word2vec')
 tf.app.flags.DEFINE_integer('batch_size', 50, 'batch size')
 tf.app.flags.DEFINE_integer('epochs', 200, 'max train epochs')
@@ -54,8 +50,6 @@ class Baseline:
         self.dropout = flags.dropout
         self.word_frequency = flags.word_frequency
 
-
-
         if flags.level == 'sent':
             self.bag = False
         elif flags.level == 'bag':
@@ -67,18 +61,13 @@ class Baseline:
         self.relation2id = self.load_relation()
         self.num_classes = len(self.relation2id)
 
-        self.keep_prob = tf.placeholder(dtype=tf.float32, name='keep_prob')
-        self.input_word = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_word')
-        self.input_pos_e1 = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_pos_e1')
-        self.input_pos_e2 = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_pos_e2')
-        self.input_label = tf.placeholder(dtype=tf.float32, shape=[None, self.num_classes], name='input_label')
 
         if self.pre_embed:
-            self.wordMap, word_embed = embedding.load_wordVec(self.data_path,self.word_dim)
+            self.wordMap, word_embed = self.load_wordVec()
             self.word_embedding = tf.get_variable(initializer=word_embed, name='word_embedding', trainable=False)
 
         else:
-            self.wordMap = embedding.load_wordMap(self.data_path,self.word_dim)
+            self.wordMap = self.load_wordMap()
             self.word_embedding = tf.get_variable(shape=[len(self.wordMap), self.word_dim], name='word_embedding',trainable=True)
 
         self.pos_e1_embedding = tf.get_variable(name='pos_e1_embedding', shape=[self.pos_num, self.pos_dim])
@@ -87,8 +76,7 @@ class Baseline:
         self.relation_embedding = tf.get_variable(name='relation_embedding', shape=[self.hidden_dim, self.num_classes])
         self.relation_embedding_b = tf.get_variable(name='relation_embedding_b', shape=[self.num_classes])
 
-        self.sentence_reps = encoder.CNN_encoder(self.word_embedding,self.input_word,self.pos_e1_embedding,self.pos_e2_embedding,self.input_pos_e1,self.input_pos_e2,self.window,self.word_dim,self.pos_dim,self.hidden_dim,self.sen_len,self.keep_prob)
-
+        self.sentence_reps = self.CNN_encoder()
 
         if self.bag:
             self.bag_level()
@@ -104,6 +92,39 @@ class Baseline:
         if x > self.pos_limit:
             return 2 * self.pos_limit + 2
 
+    def load_wordVec(self):
+        wordMap = {}
+        wordMap['PAD'] = len(wordMap)
+        wordMap['UNK'] = len(wordMap)
+        word_embed = []
+        for line in open(os.path.join(self.data_path, 'word2vec.txt'),encoding='utf8'):
+            content = line.strip().split()
+            if len(content) != self.word_dim + 1:
+                continue
+            wordMap[content[0]] = len(wordMap)
+            word_embed.append(np.asarray(content[1:], dtype=np.float32))
+
+        word_embed = np.stack(word_embed)
+        embed_mean, embed_std = word_embed.mean(), word_embed.std()
+
+        pad_embed = np.random.normal(embed_mean, embed_std, (2, self.word_dim))
+        word_embed = np.concatenate((pad_embed, word_embed), axis=0)
+        word_embed = word_embed.astype(np.float32)
+        return wordMap, word_embed
+
+    def load_wordMap(self):
+        wordMap = {}
+        wordMap['PAD'] = len(wordMap)
+        wordMap['UNK'] = len(wordMap)
+        all_content = []
+        for line in open(os.path.join(self.data_path, 'sent_train.txt'),encoding='utf8'):
+            all_content += line.strip().split('\t')[3].split()
+        for item in Counter(all_content).most_common():
+            if item[1] > self.word_frequency:
+                wordMap[item[0]] = len(wordMap)
+            else:
+                break
+        return wordMap
 
     def load_relation(self):
         relation2id = {}
@@ -144,8 +165,129 @@ class Baseline:
                 sentence_dict[id_] = np.reshape(np.asarray([words, pos1, pos2], dtype=np.int32), (1, 3, self.sen_len))
         return sentence_dict
 
+    def data_batcher(self, sentence_dict, filename, padding=False, shuffle=True):
+        if self.bag:
+            all_bags = []
+            all_sents = []
+            all_labels = []
+            with open(os.path.join(self.data_path, filename), 'r',encoding='utf8') as fr:
+                for line in fr:
+                    rel = [0] * self.num_classes
+                    try:
+                        bag_id, _, _, sents, types = line.strip().split('\t')
+                        type_list = types.split()
+                        for tp in type_list:
+                            if len(type_list) > 1 and tp == '0': # if a bag has multiple relations, we only consider non-NA relations
+                                continue
+                            rel[int(tp)] = 1
+                    except:
+                        bag_id, _, _, sents = line.strip().split('\t')
+
+                    sent_list = []
+                    for sent in sents.split():
+                        sent_list.append(sentence_dict[sent])
+
+                    all_bags.append(bag_id)
+                    all_sents.append(np.concatenate(sent_list,axis=0))
+                    all_labels.append(np.asarray(rel, dtype=np.float32))
+
+            self.data_size = len(all_bags)
+            self.datas = all_bags
+            data_order = list(range(self.data_size))
+            if shuffle:
+                np.random.shuffle(data_order)
+            if padding:
+                if self.data_size % self.batch_size != 0:
+                    data_order += [data_order[-1]] * (self.batch_size - self.data_size % self.batch_size)
+
+            for i in range(len(data_order) // self.batch_size):
+                total_sens = 0
+                out_sents = []
+                out_sent_nums = []
+                out_labels = []
+                for k in data_order[i * self.batch_size:(i + 1) * self.batch_size]:
+                    out_sents.append(all_sents[k])
+                    out_sent_nums.append(total_sens)
+                    total_sens += all_sents[k].shape[0]
+                    out_labels.append(all_labels[k])
 
 
+                out_sents = np.concatenate(out_sents, axis=0)
+                out_sent_nums.append(total_sens)
+                out_sent_nums = np.asarray(out_sent_nums, dtype=np.int32)
+                out_labels = np.stack(out_labels)
+
+                yield out_sents, out_labels, out_sent_nums
+        else:
+            all_sent_ids = []
+            all_sents = []
+            all_labels = []
+            with open(os.path.join(self.data_path, filename), 'r',encoding='utf8') as fr:
+                for line in fr:
+                    rel = [0] * self.num_classes
+                    try:
+                        sent_id, types = line.strip().split('\t')
+                        type_list = types.split()
+                        for tp in type_list:
+                            if len(type_list) > 1 and tp == '0': # if a sentence has multiple relations, we only consider non-NA relations
+                                continue
+                            rel[int(tp)] = 1
+                    except:
+                        sent_id = line.strip()
+
+                    all_sent_ids.append(sent_id)
+                    all_sents.append(sentence_dict[sent_id])
+
+                    all_labels.append(np.reshape(np.asarray(rel, dtype=np.float32), (-1, self.num_classes)))
+
+            self.data_size = len(all_sent_ids)
+            self.datas = all_sent_ids
+
+            all_sents = np.concatenate(all_sents, axis=0)
+            all_labels = np.concatenate(all_labels, axis=0)
+
+            data_order = list(range(self.data_size))
+            if shuffle:
+                np.random.shuffle(data_order)
+            if padding:
+                if self.data_size % self.batch_size != 0:
+                    data_order += [data_order[-1]] * (self.batch_size - self.data_size % self.batch_size)
+
+            for i in range(len(data_order) // self.batch_size):
+                idx = data_order[i * self.batch_size:(i + 1) * self.batch_size]
+                yield all_sents[idx], all_labels[idx], None
+
+    def CNN_encoder(self):
+        self.keep_prob = tf.placeholder(dtype=tf.float32, name='keep_prob')
+        self.input_word = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_word')
+        self.input_pos_e1 = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_pos_e1')
+        self.input_pos_e2 = tf.placeholder(dtype=tf.int32, shape=[None, self.sen_len], name='input_pos_e2')
+        self.input_label = tf.placeholder(dtype=tf.float32, shape=[None, self.num_classes], name='input_label')
+
+        inputs_forward = tf.concat(axis=2, values=[tf.nn.embedding_lookup(self.word_embedding, self.input_word), \
+                                                   tf.nn.embedding_lookup(self.pos_e1_embedding, self.input_pos_e1), \
+                                                   tf.nn.embedding_lookup(self.pos_e2_embedding, self.input_pos_e2)])
+        inputs_forward = tf.expand_dims(inputs_forward, -1)
+
+        with tf.name_scope('conv-maxpool'):
+            w = tf.get_variable(name='w', shape=[self.window, self.word_dim + 2 * self.pos_dim, 1, self.hidden_dim])
+            b = tf.get_variable(name='b', shape=[self.hidden_dim])
+            conv = tf.nn.conv2d(
+                inputs_forward,
+                w,
+                strides=[1, 1, 1, 1],
+                padding='VALID',
+                name='conv')
+            h = tf.nn.bias_add(conv, b)
+            pooled = tf.nn.max_pool(
+                h,
+                ksize=[1, self.sen_len - self.window + 1, 1, 1],
+                strides=[1, 1, 1, 1],
+                padding='VALID',
+                name='pool')
+        sen_reps = tf.tanh(tf.reshape(pooled, [-1, self.hidden_dim]))
+        sen_reps = tf.nn.dropout(sen_reps, self.keep_prob)
+        return sen_reps
 
     def bag_level(self):
         self.classifier_loss = 0.0
@@ -252,7 +394,6 @@ class Baseline:
             all_preds = np.eye(self.num_classes)[np.reshape(np.argmax(all_probs, 1), (-1))]
 
         if self.bag:
-            print(len(all_preds))
             with open('result_bag.txt', 'w',encoding='utf8') as fw:
                 for i in range(self.data_size):
                     rel_one_hot = [int(num) for num in all_preds[i].tolist()]
@@ -282,18 +423,12 @@ class Baseline:
 
             if not os.path.isdir(self.model_path):
                 os.mkdir(self.model_path)
+
             for epoch in range(self.epochs):
                 if self.bag:
-                    train_data_loader = data_loader.txt_file_data_loader(sent_train, self.data_path,'bag_relation_train.txt', self.num_classes,self.batch_size,bag=True,padding=False, shuffle=True)
-                    self.data_size, self.datas = train_data_loader.data_loader()
-                    train_batchers = train_data_loader.data_batcher()
+                    train_batchers = self.data_batcher(sent_train, 'bag_relation_train.txt', padding=False, shuffle=True)
                 else:
-                    train_data_loader = data_loader.txt_file_data_loader(sent_train, self.data_path,
-                                                                      'sent_relation_train.txt', self.num_classes,
-                                                                      self.batch_size, bag=False, padding=False,
-                                                                      shuffle=True)
-                    self.data_size, self.datas = train_data_loader.data_loader()
-                    train_batchers = train_data_loader.data_batcher()
+                    train_batchers = self.data_batcher(sent_train, 'sent_relation_train.txt', padding=False, shuffle=True)
                 for batch in train_batchers:
 
                     losses = self.run_train(sess, batch)
@@ -304,19 +439,9 @@ class Baseline:
                         print(tempstr)
                     if global_step % 200 == 0:
                         if self.bag:
-                            dev_data_loader = data_loader.txt_file_data_loader(sent_dev, self.data_path,
-                                                                              'bag_relation_dev.txt',
-                                                                              self.num_classes, self.batch_size,bag=True,
-                                                                              padding=True, shuffle=False)
-                            self.data_size, self.datas = dev_data_loader.data_loader()
-                            dev_batchers = dev_data_loader.data_batcher()
+                            dev_batchers = self.data_batcher(sent_dev, 'bag_relation_dev.txt', padding=True, shuffle=False)
                         else:
-                            dev_data_loader = data_loader.txt_file_data_loader(sent_dev, self.data_path,
-                                                                              'sent_relation_dev.txt',
-                                                                              self.num_classes, self.batch_size,bag=False,
-                                                                              padding=True, shuffle=False)
-                            self.data_size, self.datas = dev_data_loader.data_loader()
-                            dev_batchers = dev_data_loader.data_batcher()
+                            dev_batchers = self.data_batcher(sent_dev, 'sent_relation_dev.txt', padding=True, shuffle=False)
                         all_preds, all_labels = self.run_dev(sess, dev_batchers)
 
                         # when calculate f1 score, we don't consider whether NA results are predicted or not
@@ -352,21 +477,11 @@ class Baseline:
 
             sent_test = self.load_sent('sent_test.txt')
             if self.bag:
-                test_dataloader = data_loader.txt_file_data_loader(sent_test, self.data_path,
-                                                                   'bag_relation_test.txt',
-                                                                   self.num_classes, self.batch_size,bag=True,
-                                                                   padding=True, shuffle=False)
-                self.data_size, self.datas = test_dataloader.data_loader()
-                test_batchers = test_dataloader.data_batcher()
+                test_batchers = self.data_batcher(sent_test, 'bag_relation_test.txt', padding=True, shuffle=False)
             else:
-                test_dataloader = data_loader.txt_file_data_loader(sent_test, self.data_path,
-                                                                   'sent_relation_test.txt',
-                                                                   self.num_classes, self.batch_size,bag=False,
-                                                                   padding=True, shuffle=False)
-                self.data_size, self.datas = test_dataloader.data_loader()
-                test_batchers = test_dataloader.data_batcher()
-            self.run_test(sess, test_batchers)
+                test_batchers = self.data_batcher(sent_test, 'sent_relation_test.txt', padding=True, shuffle=False)
 
+            self.run_test(sess, test_batchers)
 
 
 def main(_):
@@ -388,3 +503,4 @@ def main(_):
 
 if __name__ == '__main__':
     tf.app.run()
+
